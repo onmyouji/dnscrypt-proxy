@@ -2,6 +2,7 @@
 #include <dnscrypt/plugin.h>
 
 #include <ctype.h>
+#include <getopt.h>
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
@@ -10,10 +11,16 @@
 
 DCPLUGIN_MAIN(__FILE__);
 
+static struct option getopt_long_options[] = {
+    { "min-ttl", 1, NULL, 't' },
+    { NULL, 0, NULL, 0 }
+};
+static const char *getopt_options = "t:";
+
 const char *
 dcplugin_description(DCPlugin * const dcplugin)
 {
-    return "A toy DNS cache";
+    return "A basic DNS cache";
 }
 
 const char *
@@ -22,6 +29,9 @@ dcplugin_long_description(DCPlugin * const dcplugin)
     return
         "This plugin implements a very basic DNS cache, designed to avoid\n"
         "sending the same queries multiple times in a row.\n"
+        "\n"
+        "Plugin parameters:\n"
+        "--min-ttl=<ttl>: minimum time to keep an entry cached, in seconds.\n"
         "\n"
         "Usage:\n"
         "\n"
@@ -33,6 +43,8 @@ int
 dcplugin_init(DCPlugin * const dcplugin, int argc, char *argv[])
 {
     Cache *cache;
+    int    opt_flag;
+    int    option_index = 0;
 
     if ((cache = calloc((size_t) 1U, sizeof *cache)) == NULL) {
         return -1;
@@ -42,7 +54,21 @@ dcplugin_init(DCPlugin * const dcplugin, int argc, char *argv[])
     cache->min_ttl = DEFAULT_MIN_TTL;
     cache->now = (time_t) 0;
     dcplugin_set_user_data(dcplugin, cache);
-
+    optind = 0;
+#ifdef _OPTRESET
+    optreset = 1;
+#endif
+    while ((opt_flag = getopt_long(argc, argv,
+                                   getopt_options, getopt_long_options,
+                                   &option_index)) != -1) {
+        switch (opt_flag) {
+        case 't':
+            cache->min_ttl = atoi(optarg);
+            break;
+        default:
+            return -1;
+        }
+    }
     return 0;
 }
 
@@ -57,6 +83,7 @@ free_cache_entries(CacheEntry *cache_entries)
         next = cache_entry->next;
         free(cache_entry->response);
         cache_entry->response = NULL;
+        free(cache_entry);
         cache_entry = next;
     }
 }
@@ -201,8 +228,8 @@ replace_cache_entry(Cache * const cache,
             if (in_frequent == 0) {
                 make_space_for_cache_entry(cache, cache->cache_entries_frequent);
             }
-            assert(last_cache_entry_parent->next = scanned_cache_entry);
-            last_cache_entry_parent->next = NULL;
+            assert(last_cache_entry_parent->next == scanned_cache_entry);
+            last_cache_entry_parent->next = scanned_cache_entry->next;
             scanned_cache_entry->next = cache->cache_entries_frequent;
             cache->cache_entries_frequent = scanned_cache_entry;
         }
@@ -310,7 +337,7 @@ next_rr(const uint8_t * const dns_packet, const size_t dns_packet_len,
     if (name_len_p != NULL) {
         *name_len_p = (size_t) (offset - *offset_p);
     }
-    if ((is_question ? 6 : 10) > dns_packet_len - offset) {
+    if ((is_question ? 4 : 10) > dns_packet_len - offset) {
         return -1;
     }
     if (qtype_p != NULL) {
@@ -478,11 +505,11 @@ dcplugin_sync_post_filter(DCPlugin *dcplugin, DCPluginDNSPacket *dcp_packet)
             is_empty = 0;
         }
     }
-    if (ttl < cache->min_ttl || is_empty != 0) {
-        ttl = cache->min_ttl;
+    if (min_ttl < cache->min_ttl || is_empty != 0) {
+        min_ttl = cache->min_ttl;
     }
     replace_cache_entry(cache, wire_qname, qname_len,
-                        wire_data, wire_data_len, ttl, qtype);
+                        wire_data, wire_data_len, min_ttl, qtype);
 
     return DCP_SYNC_FILTER_RESULT_OK;
 }

@@ -41,13 +41,15 @@ the first column (for example: `dnscrypt.org-fr`).
 
 5) Open an elevated command prompt (see below), enter the dnscrypt-proxy folder and type:
 
-    .\dnscrypt-proxy.exe dnscrypt-proxy.conf --test=0
+    .\dnscrypt-proxy.exe dnscrypt-proxy.conf
 
 This command just tests if everything is properly installed on your
 end, and if the resolver is properly working. If everything looks fine,
 the command should display the server key fingerprint and exit right away.
 
 If an error is displayed, retry with a different server.
+
+If not, hit Control+C to quit.
 
 5) So far, so good? Now, enable the service for real:
 
@@ -121,7 +123,9 @@ the service.
 service can be restarted later)
 - `--service-name=<name>`: set the service name (by default:
 `dnscrypt-proxy`). Multiple services with a different configuration can run
-simultaneously if they use distinct service names.
+simultaneously if they use distinct service names. `--service-name`
+must be combined with `--install`, `--install-with-config-file` or
+`--uninstall`.
 
 Example: how to try a different DNSCrypt resolver:
 
@@ -222,25 +226,76 @@ Startup options can specified as subkeys from a registry key:
 By default, the service is named `dnscrypt-proxy`, but this can be changed
 with the `--service-name` command-line switch when installing the service.
 
-The following subkeys are recognized and should be self-explanatory:
+The following registry values are recognized:
 
-    ConfigFile        (REG_SZ)
-    Plugins           (REG_MULTI_SZ)
-    LocalAddress      (REG_SZ)
-    ProviderKey       (REG_SZ)
-    ProviderName      (REG_SZ)
-    ResolverAddress   (REG_SZ)
-    ResolverName      (REG_SZ)
-    ResolversList     (REG_SZ)
-    LogFile           (REG_SZ)
-    EDNSPayloadSize   (DWORD)
-    MaxActiveRequests (DWORD)
-    TCPOnly           (DWORD)
-    ClientKeyFile     (REG_SZ)
-    EphemeralKeys     (DWORD)
+Registry Value    | Type
+----------------- | --------------
+ConfigFile        | REG_SZ
+ResolversList     | REG_SZ
+ResolverName      | REG_SZ
+LocalAddress      | REG_SZ
+ProviderKey       | REG_SZ
+ProviderName      | REG_SZ
+ResolverAddress   | REG_SZ
+EDNSPayloadSize   | REG_DWORD
+MaxActiveRequests | REG_DWORD
+TCPOnly           | REG_DWORD
+EphemeralKeys     | REG_DWORD
+IgnoreTimestamps  | REG_DWORD
+ClientKeyFile     | REG_SZ
+LogFile           | REG_SZ
+LogLevel          | REG_DWORD
+Plugins           | REG_MULTI_SZ
 
-For example, in order to listen to local address that is not the default
-`127.0.0.1`, the key to put the custom IP address is
+Detail of registry values:
+
+    ResolversList     : Full path to the `dnscrypt-resolvers.csv` file.
+                        Equivalent to the `resolvers-list` parameter.
+    ResolverName      : Resolver name in the `dnscrypt-resolvers.csv` file.
+                        This is the first column (`Name`) in that CSV file.
+                        Equivalent to the `resolver-name` parameter.
+    LocalAddress      : IP address where `dnscrypt-proxy` listen for DNS request.
+                        Equivalent to the `local-address` parameter.
+    ProviderKey       : DNS server key.
+                        `Provider public key` column in the `dnscrypt-resolvers.csv` file.
+                        Equivalent to the `provider-key` parameter.
+    ProviderName      : DNS server name.
+                        `Provider name` column in the `dnscrypt-resolvers.csv` file.
+                        Equivalent to the `provider-name` parameter.
+    ResolverAddress   : DNS server IP.
+                        `Resolver address` column in the `dnscrypt-resolvers.csv` file.
+                        Equivalent to the `resolver-address` parameter.
+    EDNSPayloadSize   : EDNS size.
+                        Must be between `1` and `65507` (IPv4) or `65535` (IPv6-only).
+                        Equivalent to the `edns-payload-size` parameter.
+    MaxActiveRequests : Maximum number of client DNS requests to process concurrently.
+                        Must be equal or greater than `1`.
+                        Equivalent to the `max-active-requests` parameter.
+    TCPOnly           : Send DNS queries to upstream servers using only TCP if set to `1`.
+                        Must be `1` or `0`.
+                        Equivalent to the `tcp-only` parameter.
+    EphemeralKeys     : Create a new key pair for every query.
+                        Must be `1` or `0`.
+                        Equivalent to the `ephemeral-keys` parameter.
+    IgnoreTimestamps  : Must be `1` or `0`.
+                        Equivalent to the `ignore-timestamps` parameter. Do not enable blindly.
+    ClientKeyFile     : Use a static key pair. This is the path to a file storing the secret key.
+                        Equivalent to the `client-key` parameter.
+    LogFile           : Log file for `dnscrypt-proxy`.
+                        Equivalent to the `logfile` parameter.
+    LogLevel          : Maximum log level.
+                        Equivalent to the `loglevel` parameter.
+    Plugins           : Set of plugins to be loaded by `dnscrypt-proxy`.
+                        Equivalent to one or more `plugin` command-line arguments.
+
+Plugins Example (INF):
+
+````
+HKLM,"SYSTEM\CurrentControlSet\services\dnscrypt-proxy\Parameters",0x10000,"C:\Program Files\DNSCrypt\libdcplugin_example_ldns_blocking.dll,--domains=C:\Program Files\DNSCrypt\Names.txt,--ips=C:\Program Files\DNSCrypt\IPs.txt,--logfile=C:\DNSCrypt-Block.log"
+````
+
+For example, in order to listen to a local address different from the default
+`127.0.0.1`, the key to put the custom IP address in is
 `HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\dnscrypt-proxy\Parameters\LocalAddress`.
 
 Unless `ConfigFile` is set, two entries are mandatory:

@@ -16,6 +16,13 @@
 #include <time.h>
 #include <unistd.h>
 
+#if defined(__linux__) && defined(HAVE_LINUX_RANDOM_H)
+# include <sys/ioctl.h>
+# include <sys/stat.h>
+# include <fcntl.h>
+# include <linux/random.h>
+#endif
+
 #include <event2/event.h>
 #include <event2/util.h>
 
@@ -32,6 +39,7 @@
 #include "logger.h"
 #include "options.h"
 #include "sandboxes.h"
+#include "simpleconf.h"
 #include "stack_trace.h"
 #include "tcp_request.h"
 #include "udp_request.h"
@@ -93,7 +101,7 @@ sockaddr_from_ip_and_port(struct sockaddr_storage * const sockaddr,
 }
 
 static int
-proxy_context_init(ProxyContext * const proxy_context, int argc, char *argv[])
+proxy_context_init(ProxyContext * const proxy_context, int *argc_p, char ***argv_p)
 {
     memset(proxy_context, 0, sizeof *proxy_context);
     proxy_context->event_loop = NULL;
@@ -110,7 +118,7 @@ proxy_context_init(ProxyContext * const proxy_context, int argc, char *argv[])
     proxy_context->tcp_listener_handle = -1;
     sodium_mlock(&proxy_context->dnscrypt_client,
                  sizeof proxy_context->dnscrypt_client);
-    if (options_parse(&app_context, proxy_context, argc, argv) != 0) {
+    if (options_parse(&app_context, proxy_context, argc_p, argv_p) != 0) {
         return -1;
     }
 #ifdef _WIN32
@@ -282,7 +290,7 @@ init_descriptors_from_systemd(ProxyContext * const proxy_context)
     }
     assert(num_sd_fds <= INT_MAX - SD_LISTEN_FDS_START);
     for (sock = SD_LISTEN_FDS_START; sock < SD_LISTEN_FDS_START + num_sd_fds;
-         ++sock) {
+         sock++) {
        if (sd_is_socket(sock, AF_INET, SOCK_DGRAM, 0) > 0 ||
            sd_is_socket(sock, AF_INET6, SOCK_DGRAM, 0) > 0) {
            proxy_context->udp_listener_handle = sock;
@@ -331,6 +339,29 @@ sighup_cb(evutil_socket_t sig, short events, void *fodder)
 }
 #endif
 
+static void
+entropy_check(void)
+{
+#if defined(__linux__) && defined(HAVE_LINUX_RANDOM_H) && defined(RNDGETENTCNT)
+    int fd;
+    int c;
+
+    if ((fd = open("/dev/random", O_RDONLY)) != -1) {
+        if (ioctl(fd, RNDGETENTCNT, &c) == 0 && c < 160) {
+            logger(NULL, LOG_WARNING,
+                   "This system doesn't provide enough entropy to quickly generate high-quality random numbers");
+            logger(NULL, LOG_WARNING,
+                   "Installing the rng-utils/rng-tools or haveged packages may help.");
+            logger(NULL, LOG_WARNING,
+                   "On virtualized Linux environments, also consider using virtio-rng.");
+            logger(NULL, LOG_WARNING,
+                   "The service will not start until enough entropy has been collected.");
+        }
+        close(fd);
+    }
+#endif
+}
+
 int
 dnscrypt_proxy_main(int argc, char *argv[])
 {
@@ -343,22 +374,25 @@ dnscrypt_proxy_main(int argc, char *argv[])
 
     setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
     stack_trace_on_crash();
+    entropy_check();
     if (sodium_init() != 0) {
         exit(1);
     }
+    app_context.allocated_args = 0;
 #ifdef PLUGINS
     if ((app_context.dcps_context = plugin_support_context_new()) == NULL) {
         logger_noformat(NULL, LOG_ERR, "Unable to setup plugin support");
         exit(2);
     }
 #endif
-    if (proxy_context_init(&proxy_context, argc, argv) != 0) {
+    if (proxy_context_init(&proxy_context, &argc, &argv) != 0) {
         logger_noformat(NULL, LOG_ERR, "Unable to start the proxy");
         exit(1);
     }
     logger_noformat(&proxy_context, LOG_NOTICE, "Starting " PACKAGE_STRING);
     sodium_mlock(&proxy_context, sizeof proxy_context);
     randombytes_set_implementation(&randombytes_salsa20_implementation);
+
 #ifdef PLUGINS
     if (plugin_support_context_load(app_context.dcps_context) != 0) {
         logger_noformat(NULL, LOG_ERR, "Unable to load plugins");
@@ -442,6 +476,8 @@ dnscrypt_proxy_main(int argc, char *argv[])
     sodium_munlock(&proxy_context, sizeof proxy_context);
     app_context.proxy_context = NULL;
     randombytes_close();
-
+    if (app_context.allocated_args != 0) {
+        sc_argv_free(argc, argv);
+    }
     return 0;
 }

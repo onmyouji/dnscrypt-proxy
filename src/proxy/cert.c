@@ -49,10 +49,10 @@ cert_parse_version(ProxyContext * const proxy_context,
          && signed_bincert->version_major[1] != 2U
 #endif
         )) {
-        logger(proxy_context, LOG_WARNING,
-               "Unsupported certificate version: [%u][%u]",
-               signed_bincert->version_major[0],
-               signed_bincert->version_major[1]);
+        logger(proxy_context, LOG_INFO,
+               "Unsupported certificate version: %u.%u",
+               signed_bincert->version_major[1],
+               signed_bincert->version_major[0]);
         return -1;
     }
     return 0;
@@ -134,9 +134,9 @@ cert_parse_bincert(ProxyContext * const proxy_context,
                previous_serial, serial);
         return -1;
     } else if (previous_version < version) {
-        logger(proxy_context, LOG_INFO, "Favoring certificate #%" PRIu32 " "
-               "which is for a more recent version than #%" PRIu32,
-               serial, previous_serial);
+        logger(proxy_context, LOG_INFO,
+               "Favoring version #%" PRIu32 " over version #%" PRIu32,
+               version, previous_version);
         return 0;
     }
     if (previous_serial > serial) {
@@ -190,12 +190,12 @@ cert_open_bincert(ProxyContext * const proxy_context,
         return -1;
     }
     if (cert_parse_bincert(proxy_context, bincert, *bincert_p) != 0) {
-        memset(bincert, 0, sizeof *bincert);
+        sodium_memzero(bincert, sizeof *bincert);
         free(bincert);
         return -1;
     }
     if (*bincert_p != NULL) {
-        memset(*bincert_p, 0, sizeof **bincert_p);
+        sodium_memzero(*bincert_p, sizeof **bincert_p);
         free(*bincert_p);
     }
     *bincert_p = bincert;
@@ -377,11 +377,11 @@ cert_query_cb(int result, char type, int count, int ttl,
     if (bincert == NULL) {
         logger_noformat(proxy_context, LOG_ERR,
                         "No useable certificates found");
-        cert_reschedule_query_after_failure(proxy_context);
         DNSCRYPT_PROXY_CERTS_UPDATE_ERROR_NOCERTS();
         if (proxy_context->test_only) {
             exit(DNSCRYPT_EXIT_CERT_NOCERTS);
         }
+        cert_reschedule_query_after_failure(proxy_context);
         return;
     }
     switch (bincert->version_major[1]) {
@@ -397,23 +397,33 @@ cert_query_cb(int result, char type, int count, int ttl,
         logger_noformat(proxy_context, LOG_ERR,
                         "Unsupported certificate version");
         cert_reschedule_query_after_failure(proxy_context);
-        DNSCRYPT_PROXY_CERTS_UPDATE_ERROR_NOCERTS();
-        if (proxy_context->test_only) {
-            exit(DNSCRYPT_EXIT_CERT_NOCERTS);
-        }
         return;
     }
     if (proxy_context->test_only != 0) {
         const uint32_t now_u32 = (uint32_t) time(NULL);
+        uint32_t       ts_begin;
         uint32_t       ts_end;
+        uint32_t       safe_end;
 
+        memcpy(&ts_begin, bincert->ts_begin, sizeof ts_begin);
+        ts_begin = htonl(ts_begin);
         memcpy(&ts_end, bincert->ts_end, sizeof ts_end);
-        ts_end = htonl(ts_end);
-
-        if (ts_end < (uint32_t) proxy_context->test_cert_margin ||
-            now_u32 > ts_end - (uint32_t) proxy_context->test_cert_margin) {
+        safe_end = ts_end = htonl(ts_end);
+        if (safe_end > (uint32_t) proxy_context->test_cert_margin) {
+            safe_end -= (uint32_t) proxy_context->test_cert_margin;
+        } else {
+            safe_end = ts_begin;
+        }
+        if (safe_end < ts_begin) {
             logger_noformat(proxy_context, LOG_WARNING,
-                            "The certificate is not valid for the given safety margin");
+                            "Safety margin wider than the certificate validity period");
+            safe_end = ts_begin;
+        }
+        if (now_u32 < ts_begin || now_u32 > safe_end) {
+            logger(proxy_context, LOG_WARNING,
+                   "The certificate is not valid for the given safety margin (%lu-%lu not within [%lu..%lu])",
+                   (unsigned long) now_u32, (unsigned long) proxy_context->test_cert_margin,
+                   (unsigned long) ts_begin, (unsigned long) safe_end);
             DNSCRYPT_PROXY_CERTS_UPDATE_ERROR_NOCERTS();
             exit(DNSCRYPT_EXIT_CERT_MARGIN);
         }
@@ -431,7 +441,7 @@ cert_query_cb(int result, char type, int count, int ttl,
     cert_print_server_key(proxy_context);
     dnscrypt_client_init_magic_query(&proxy_context->dnscrypt_client,
                                      bincert->magic_query, cipher);
-    memset(bincert, 0, sizeof *bincert);
+    sodium_memzero(bincert, sizeof *bincert);
     free(bincert);
     if (proxy_context->test_only) {
         DNSCRYPT_PROXY_CERTS_UPDATE_DONE((unsigned char *)
